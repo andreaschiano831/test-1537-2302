@@ -509,13 +509,71 @@ function getPiattiStatus(){
 // ══════════════════════════════════════════════════════════════════════
 //  STORAGE — localStorage + Firestore sync
 // ══════════════════════════════════════════════════════════════════════
-var stor={
+var stor={// ── Kitchen scope (workspace) ─────────────────────────────
+var BRIDGE_KEY_BASE = "mep_sync_bridge_v1";
+var _pendingKitchenId = null;
+
+function currentKitchenId(){
+  return (S && S.profile && S.profile.kitchenId) || _pendingKitchenId || null;
+}
+function bridgeKey(){
+  var kid = currentKitchenId();
+  return BRIDGE_KEY_BASE + (kid ? ("_" + kid) : "");
+}
+function ws(path){
+  path = String(path || "").replace(/^\/+/, "");
+  if (path.indexOf("kitchens/") === 0) return path;
+  var kid = currentKitchenId();
+  return kid ? ("kitchens/" + kid + "/" + path) : path;
+}
   get:function(k){try{var v=localStorage.getItem(k);return v?JSON.parse(v):null;}catch(e){return null;}},
   set:function(k,v){try{localStorage.setItem(k,JSON.stringify(v));}catch(e){}},
   rm:function(k){try{localStorage.removeItem(k);}catch(e){}},
 };
-
 function fbDoc(path){
+  if(!window._FB) return null;
+  var clean = ws(path);
+  var parts = clean.split("/").filter(Boolean);
+  if(parts.length % 2 !== 0) return null;
+  return window._FB.doc.apply(null, [window._FB.db].concat(parts));
+}
+
+function fbSet(path, data, opts){
+  if(!window._FB || !window._FBReady) return;
+  opts = opts || { merge:true };
+  var d = fbDoc(path); if(!d) return;
+  window._FB.setDoc(d, Object.assign({}, data, {
+    _updatedAt: new Date().toISOString(),
+    _uid: window._FBUserId || null
+  }), opts).catch(function(e){
+    console.warn("Firestore write:", e.message);
+  });
+}
+
+function fbGet(path, cb){
+  if(!window._FB) return cb(null);
+  var d = fbDoc(path); if(!d) return cb(null);
+  window._FB.getDoc(d)
+    .then(function(snap){ cb(snap.exists()?snap.data():null); })
+    .catch(function(){ cb(null); });
+}
+
+
+  var payload = Object.assign({}, data, {
+    _updatedAt: new Date().toISOString(),
+    _uid: window._FBUserId || null
+  });
+
+  window._FB.setDoc(d, payload, opts)
+    .catch(function(e){ console.warn("fbSet", path, e.message); });
+}
+
+function fbDel(path){
+  if(!window._FB || !window._FBReady) return;
+  var d = fbDoc(path);
+  if(!d) return;
+  window._FB.deleteDoc(d).catch(function(e){ console.warn("fbDel", path, e.message); });
+}
   if(!window._FB)return null;
   var parts=path.split("/");
   return window._FB.doc(window._FB.db,parts[0],parts[1]);
@@ -692,31 +750,39 @@ function purgeSdone(d){if(!d||d.day!==today())return[];return Array.isArray(d.id
 //  frigo  = item congelatore (scritti da Congelatore, letti qui)
 // ══════════════════════════════════════════════════════════════════════
 function readBridge(){return _bridgeCache;}
-
 function _writeBridgeFirestore(data){
-  if(!S.profile)return;
-  try{localStorage.setItem(BRIDGE_KEY,JSON.stringify(data));}catch(e){}
-  if(!window._FB||!window._FBReady)return;
-  var d=window._FB.doc(window._FB.db,"bridge",S.profile.partita);
-  window._FB.setDoc(d,data,{merge:false}).catch(function(e){console.warn("Bridge write:",e.message);});
+  if(!S.profile) return;
+
+  try{ localStorage.setItem(bridgeKey(), JSON.stringify(data)); }catch(e){}
+
+  if(!window._FB || !window._FBReady) return;
+  fbSet("bridge/" + S.profile.partita, data, { merge:false });
 }
 
 function _subscribeToBridge(partita){
-  if(_bridgeUnsubscribe){_bridgeUnsubscribe();_bridgeUnsubscribe=null;}
-  // localStorage immediato
-  try{var cached=localStorage.getItem(BRIDGE_KEY);if(cached){_bridgeCache=JSON.parse(cached);}}catch(e){}
-  if(!window._FB||!window._FBReady)return;
-  var d=window._FB.doc(window._FB.db,"bridge",partita);
-  _bridgeUnsubscribe=window._FB.onSnapshot(d,function(snap){
+  if(_bridgeUnsubscribe){ _bridgeUnsubscribe(); _bridgeUnsubscribe=null; }
+
+  try{
+    var cached = localStorage.getItem(bridgeKey());
+    if(cached) _bridgeCache = JSON.parse(cached);
+  }catch(e){}
+
+  if(!window._FB || !window._FBReady) return;
+
+  var d = fbDoc("bridge/" + partita);
+  if(!d) return;
+
+  _bridgeUnsubscribe = window._FB.onSnapshot(d, function(snap){
     if(snap.exists()){
-      _bridgeCache=snap.data();
-      try{localStorage.setItem(BRIDGE_KEY,JSON.stringify(_bridgeCache));}catch(e){}
-      // Aggiorna UI scheda frigo in tempo reale
-      if(S.tab==="frigo"&&document.getElementById("main-area")){
+      _bridgeCache = snap.data();
+      try{ localStorage.setItem(bridgeKey(), JSON.stringify(_bridgeCache)); }catch(e){}
+      if(S.tab==="frigo" && document.getElementById("main-area")){
         renderFrigo(document.getElementById("main-area"));
       }
     }
-  },function(e){console.warn("Bridge onSnapshot:",e.message);});
+  }, function(e){
+    console.warn("Bridge onSnapshot:", e.message);
+  });
 }
 
 function syncProdsToBridge(){
@@ -801,8 +867,8 @@ function boot(){
   injectManifest();
   window._bootDone=true;
   var prof=stor.get(FRZ_PROFILE)||stor.get(PREP_PROFILE);
-  if(prof&&PARTITE[prof.partita]){
-    S.profile=prof;
+if(prof && prof.kitchenId && PARTITE[prof.partita]){
+  S.profile=prof;
     var p=prof.partita;
     var t=stor.get(PREP_TASKS(p));var pr=stor.get(PREP_PRODS(p));var pi=stor.get(PREP_PIATTI(p));
     var dn=stor.get(PREP_DONE(p));var sd=stor.get(PREP_SDONE(p));var nt=stor.get(PREP_NOTES(p));
