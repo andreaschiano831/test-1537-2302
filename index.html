@@ -275,34 +275,49 @@ function fbGet(path,cb){
 //  frigo  = item congelatore collegati (scritti qui, letti da MeP)
 // ══════════════════════════════════════════════════════════════════════
 function readBridge(){return _bridgeCache;}
-
 function _writeBridgeFirestore(data){
-  if(!S.profile)return;
-  // localStorage fallback sempre aggiornato
-  try{localStorage.setItem(BRIDGE_KEY,JSON.stringify(data));}catch(e){}
-  // Firestore per sync cross-device
-  if(!window._FB||!window._FBReady)return;
-  var d=window._FB.doc(window._FB.db,"bridge",S.profile.partita);
-  window._FB.setDoc(d,data,{merge:false})
-    .catch(function(e){console.warn("Bridge write error:",e.message);});
+  if(!S.profile) return;
+
+  // localStorage fallback (per cucina)
+  try{ localStorage.setItem(bridgeKey(), JSON.stringify(data)); }catch(e){}
+
+  // Firestore per sync cross-device (per cucina)
+  if(!window._FB || !window._FBReady) return;
+
+  // kitchens/{kid}/bridge/{partita}
+  fbSet("bridge/" + S.profile.partita, data, { merge:false });
 }
 
 function _subscribeToBridge(partita){
-  if(_bridgeUnsubscribe){_bridgeUnsubscribe();_bridgeUnsubscribe=null;}
-  // Leggi prima dal localStorage come cache immediata
-  try{var cached=localStorage.getItem(BRIDGE_KEY);if(cached){_bridgeCache=JSON.parse(cached);}}catch(e){}
-  if(!window._FB||!window._FBReady){return;}
-  var d=window._FB.doc(window._FB.db,"bridge",partita);
-  _bridgeUnsubscribe=window._FB.onSnapshot(d,function(snap){
+  if(_bridgeUnsubscribe){ _bridgeUnsubscribe(); _bridgeUnsubscribe=null; }
+
+  // Cache immediata da localStorage (per cucina)
+  try{
+    var cached = localStorage.getItem(bridgeKey());
+    if(cached) _bridgeCache = JSON.parse(cached);
+  }catch(e){}
+
+  if(!window._FB || !window._FBReady) return;
+
+  var d = fbDoc("bridge/" + partita); // kitchens/{kid}/bridge/{partita}
+  if(!d) return;
+
+  _bridgeUnsubscribe = window._FB.onSnapshot(d, function(snap){
     if(snap.exists()){
-      _bridgeCache=snap.data();
-      // Aggiorna localStorage come fallback offline
-      try{localStorage.setItem(BRIDGE_KEY,JSON.stringify(_bridgeCache));}catch(e){}
-      // Se la UI mostra la scheda MeP sync, aggiornala in tempo reale
-      if(S.tab==="mep"&&document.getElementById("main-area")){
-        var area=document.getElementById("main-area");
-        renderPrepSync(area);
+      _bridgeCache = snap.data();
+
+      // Aggiorna localStorage fallback
+      try{ localStorage.setItem(bridgeKey(), JSON.stringify(_bridgeCache)); }catch(e){}
+
+      // refresh UI se serve
+      if(S.tab==="mep" && document.getElementById("main-area")){
+        renderPrepSync(document.getElementById("main-area"));
       }
+    }
+  }, function(e){
+    console.warn("Bridge onSnapshot error:", e.message);
+  });
+}
     }
   },function(e){console.warn("Bridge onSnapshot error:",e.message);});
 }
