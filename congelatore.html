@@ -282,34 +282,7 @@ function fbGet(path,cb){
 // ══════════════════════════════════════════════════════════════════════
 function readBridge(){return _bridgeCache;}
 
-function _writeBridgeFirestore(data){
-  if(!S.profile)return;
-  // localStorage fallback sempre aggiornato
-  try{localStorage.setItem(BRIDGE_KEY,JSON.stringify(data));}catch(e){}
-  // Firestore per sync cross-device
-  if(!window._FB||!window._FBReady)return;
-  var d=window._FB.doc(window._FB.db,"bridge",S.profile.partita);
-  window._FB.setDoc(d,data,{merge:false})
-    .catch(function(e){console.warn("Bridge write error:",e.message);});
-}
 
-function _subscribeToBridge(partita){
-  if(_bridgeUnsubscribe){_bridgeUnsubscribe();_bridgeUnsubscribe=null;}
-  // Leggi prima dal localStorage come cache immediata
-  try{var cached=localStorage.getItem(BRIDGE_KEY);if(cached){_bridgeCache=JSON.parse(cached);}}catch(e){}
-  if(!window._FB||!window._FBReady){return;}
-  var d=window._FB.doc(window._FB.db,"bridge",partita);
-  _bridgeUnsubscribe=window._FB.onSnapshot(d,function(snap){
-    if(snap.exists()){
-      _bridgeCache=snap.data();
-      // Aggiorna localStorage come fallback offline
-      try{localStorage.setItem(BRIDGE_KEY,JSON.stringify(_bridgeCache));}catch(e){}
-      // Se la UI mostra la scheda MeP sync, aggiornala in tempo reale
-      if(S.tab==="mep"&&document.getElementById("main-area")){
-        var area=document.getElementById("main-area");
-        renderPrepSync(area);
-      }
-    }
   },function(e){console.warn("Bridge onSnapshot error:",e.message);});
 }
 
@@ -326,6 +299,48 @@ function pushFrigoToBridge(frigoItem){
   b.lastUpdate=new Date().toISOString();
   _bridgeCache=b;
   _writeBridgeFirestore(b);
+function _writeBridgeFirestore(data){
+  if(!S.profile) return;
+
+  // localStorage fallback (per cucina)
+  try{ localStorage.setItem(bridgeKey(), JSON.stringify(data)); }catch(e){}
+
+  // Firestore per sync cross-device (per cucina)
+  if(!window._FB || !window._FBReady) return;
+
+  // kitchens/{kid}/bridge/{partita}
+  fbSet("bridge/" + S.profile.partita, data, { merge:false });
+}
+
+function _subscribeToBridge(partita){
+  if(_bridgeUnsubscribe){ _bridgeUnsubscribe(); _bridgeUnsubscribe=null; }
+
+  // Cache immediata da localStorage (per cucina)
+  try{
+    var cached = localStorage.getItem(bridgeKey());
+    if(cached) _bridgeCache = JSON.parse(cached);
+  }catch(e){}
+
+  if(!window._FB || !window._FBReady) return;
+
+  var d = fbDoc("bridge/" + partita); // kitchens/{kid}/bridge/{partita}
+  if(!d) return;
+
+  _bridgeUnsubscribe = window._FB.onSnapshot(d, function(snap){
+    if(snap.exists()){
+      _bridgeCache = snap.data();
+
+      // Aggiorna localStorage fallback
+      try{ localStorage.setItem(bridgeKey(), JSON.stringify(_bridgeCache)); }catch(e){}
+
+      // refresh UI se serve
+      if(S.tab==="mep" && document.getElementById("main-area")){
+        renderPrepSync(document.getElementById("main-area"));
+      }
+    }
+  }, function(e){
+    console.warn("Bridge onSnapshot error:", e.message);
+  });
 }
 
 function removeFrigoFromBridge(id){
@@ -651,8 +666,8 @@ function boot(){
   window._bootDone=true;
   var prof=stor.get(ACCT.profile);
   S.items=loadAllItems();
-  if(prof&&PARTITE[prof.partita]){
-    S.profile=prof;S.filter=prof.partita;
+if(prof && prof.kitchenId && PARTITE[prof.partita]){
+  S.profile=prof;S.filter=prof.partita;
     var ords=stor.get(ACCT.orders(prof.partita));var cks=stor.get(ACCT.checks(prof.partita));
     S.orders=(ords&&Array.isArray(ords.items))?ords.items:[];
     S.checks=cks?purgeChecks(cks):[];
@@ -672,39 +687,250 @@ function boot(){
 // ══════════════════════════════════════════════════════════════════════
 //  ONBOARDING
 // ══════════════════════════════════════════════════════════════════════
+
 function renderOnboarding(){
-  var app=document.getElementById("app");app.innerHTML="";
-  var step=0;var nome="";var partita="";
-  var wrap=el("div",{class:"onboard"});app.appendChild(wrap);
-  function draw(){
-    wrap.innerHTML="";
-    var logo=el("div",{style:"text-align:center;margin-bottom:36px"});
-    logo.innerHTML="<div style='width:90px;height:90px;border-radius:26px;background:"+ICE+";display:flex;align-items:center;justify-content:center;font-size:48px;margin:0 auto 16px;box-shadow:0 12px 40px rgba(220,38,38,.35);animation:pulse 2s ease infinite'>❄️</div><div style='font-size:30px;font-weight:900;color:"+TX0+";letter-spacing:-.5px'>Congelatore Pro</div><div style='font-size:13px;color:"+TX2+";margin-top:5px;font-weight:500'>+ Sync Mise en Place</div>";
-    wrap.appendChild(logo);
-    var prog=el("div",{style:"display:flex;gap:8px;margin-bottom:40px"});for(var i=0;i<2;i++)prog.appendChild(el("div",{style:"height:4px;border-radius:99px;transition:all .3s;width:"+(step===i?"32":"10")+"px;background:"+(step>=i?RED:"rgba(0,0,0,.10)")}));wrap.appendChild(prog);
-    var inner=el("div",{style:"width:100%;max-width:420px;animation:slideUp .26s ease"});
-    if(step===0){
-      inner.appendChild(el("div",{style:"font-size:26px;font-weight:900;color:"+TX0+";margin-bottom:8px",text:"Ciao! 👋"}));
-      inner.appendChild(el("div",{style:"font-size:15px;color:"+TX1+";margin-bottom:28px;line-height:1.65",text:"Come ti chiami? Personalizziamo l'app per la tua cucina."}));
-      var lW=el("div",{style:"margin-bottom:22px"});lW.appendChild(el("label",{class:"lbl",text:"Il tuo nome"}));
-      var nI=el("input",{class:"inp",type:"text",placeholder:"es. Marco, Chef Bianchi…",style:"font-size:16px",autocomplete:"given-name",autocorrect:"off",autocapitalize:"words",value:nome});
-      nI.addEventListener("input",function(){nome=nI.value;pb.disabled=!nome.trim();});
-      nI.addEventListener("keydown",function(e){if(e.key==="Enter"&&nome.trim())next();});
-      lW.appendChild(nI);inner.appendChild(lW);
-      var pb=mkBtn("Continua →","primary lg full",next);pb.disabled=!nome.trim();inner.appendChild(pb);setTimeout(function(){nI.focus();},100);
-    }else{
-      inner.appendChild(el("div",{style:"font-size:26px;font-weight:900;color:"+TX0+";margin-bottom:8px",text:"Ciao, "+nome+"! 👨‍🍳"}));
-      inner.appendChild(el("div",{style:"font-size:15px;color:"+TX1+";margin-bottom:6px;line-height:1.65;html:true",html:"Seleziona la tua <span style='color:"+RED+";font-weight:800'>partita</span>."}));
-      inner.appendChild(el("div",{style:"background:rgba(10,22,40,.06);border:1px solid rgba(10,22,40,.15);border-radius:12px;padding:10px 14px;margin-bottom:22px;font-size:13px;color:"+TX1+";line-height:1.55",text:"🔗 I dati si sincronizzano automaticamente con la Mise en Place sulla stessa partita."}));
-      var grid=el("div",{style:"display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:22px"});
-      PK.forEach(function(k){(function(k){var p=PARTITE[k];var sel=partita===k;var b=el("button",{class:"btn",style:"padding:18px 12px;border-radius:18px;border:2px solid "+(sel?p.col:"rgba(0,0,0,.09)")+";background:"+(sel?p.bg:"#fff")+";color:"+(sel?p.col:TX2)+";display:flex;flex-direction:column;align-items:center;gap:8px;font-size:14px;font-weight:800;width:100%;transition:all .18s;cursor:pointer;touch-action:manipulation"});b.innerHTML="<span style='font-size:30px'>"+p.ico+"</span><span>"+p.label+"</span>";b.addEventListener("click",function(){partita=k;draw();});grid.appendChild(b);})(k);});
-      inner.appendChild(grid);
-      var row=el("div",{style:"display:flex;gap:10px"});row.appendChild(mkBtn("←","ghost md",function(){step=0;draw();}));var eb=mkBtn("Entra ❄️","primary lg full",next);eb.disabled=!partita;row.appendChild(eb);inner.appendChild(row);
-    }
-    wrap.appendChild(inner);
+  var app = document.getElementById("app");
+  app.innerHTML = "";
+
+  var card = el("div",{style:"max-width:520px;margin:28px auto;padding:18px"});
+  var title = el("div",{style:"font-size:18px;font-weight:900;margin-bottom:6px;color:"+TX0, text:"Setup cucina"});
+  var sub = el("div",{style:"font-size:12px;color:"+TX2+";margin-bottom:14px;line-height:1.35",
+    text:"Crea o entra in una cucina (Kitchen ID), poi scegli nome e partita."});
+
+  var step = 0; // 0=kitchen, 1=nome, 2=partita
+
+  var kitchenId = "";
+  var inviteToken = "";
+  var roleWanted = "chef"; // usato solo in create (admin fisso)
+  var nome = "";
+  var partita = PK[0];
+
+  function genKitchenId(){
+    // corto, leggibile, docId valido
+    var s = Math.random().toString(36).slice(2, 8).toUpperCase();
+    return "K" + s;
   }
-  function next(){if(step===0){if(!nome.trim())return;step=1;draw();return;}if(step===1&&partita){var prof={nome:nome.trim(),partita:partita};stor.set(ACCT.profile,prof);S.profile=prof;S.filter=partita;var ords=stor.get(ACCT.orders(partita));var cks=stor.get(ACCT.checks(partita));S.orders=(ords&&Array.isArray(ords.items))?ords.items:[];S.checks=cks?purgeChecks(cks):[];if(window._FBReady&&window._initFirebaseSync)window._initFirebaseSync();else _subscribeToBridge(partita);renderApp();}}
+  function genInviteCode(){
+    return Math.random().toString(36).slice(2, 10).toUpperCase();
+  }
+  function parseInviteToken(tok){
+    tok = (tok||"").trim();
+    // formato: KITCHENID:CODE
+    var m = tok.match(/^([A-Za-z0-9_-]{3,24})\:([A-Za-z0-9_-]{4,32})$/);
+    if(!m) return null;
+    return { kid: m[1], code: m[2] };
+  }
+
+  function createKitchenAndOwner(kid, ownerName){
+    // crea cucina + owner admin
+    var now = new Date().toISOString();
+    var uid = window._FBUserId || null;
+    if(!uid){ flash("Auth non pronta (Firebase). Riprova tra 2s","err"); return; }
+
+    // kitchen doc
+    fbSet("kitchens/"+kid, { name: kid, createdAt: now, createdBy: uid }, {merge:true});
+
+    // membro admin
+    fbSet("kitchens/"+kid+"/members/"+uid, {
+      name: ownerName || "Admin",
+      role: "admin",
+      joinedAt: now
+    }, {merge:true});
+  }
+
+  function createInvite(kid, role, cb){
+    var uid = window._FBUserId || null;
+    if(!uid){ flash("Auth non pronta (Firebase).","err"); return; }
+    var code = genInviteCode();
+    var now = new Date().toISOString();
+
+    fbSet("kitchens/"+kid+"/invites/"+code, {
+      role: role,
+      active: true,
+      createdAt: now,
+      createdBy: uid
+    }, {merge:true});
+
+    cb && cb(code);
+  }
+
+  function acceptInviteAndJoin(tok, displayName, cb){
+    var p = parseInviteToken(tok);
+    if(!p){ flash("Invito non valido. Formato: KITCHENID:CODICE","err"); return; }
+
+    var uid = window._FBUserId || null;
+    if(!uid){ flash("Auth non pronta (Firebase).","err"); return; }
+
+    // Leggi invito
+    fbGet("kitchens/"+p.kid+"/invites/"+p.code, function(inv){
+      if(!inv || inv.active !== true){
+        flash("Invito non trovato o disattivato.","err");
+        return;
+      }
+      var now = new Date().toISOString();
+
+      // Crea/aggiorna membro con ruolo dall’invito
+      fbSet("kitchens/"+p.kid+"/members/"+uid, {
+        name: displayName || "Staff",
+        role: inv.role || "staff",
+        inviteCode: p.code,
+        joinedAt: now
+      }, {merge:true});
+
+      cb && cb(p.kid, inv.role || "staff");
+    });
+  }
+
+  function stepKitchen(body){
+    body.appendChild(el("div",{style:"font-size:11px;font-weight:900;color:"+TX2+";letter-spacing:.7px;text-transform:uppercase;margin-bottom:10px", text:"1) Cucina (Kitchen ID)"}));
+
+    var box = el("div",{style:"background:#fff;border:1px solid rgba(0,0,0,.08);border-radius:14px;padding:14px"});
+    box.appendChild(el("div",{style:"font-size:12px;color:"+TX2+";margin-bottom:10px;line-height:1.35",
+      text:"Se hai un invito: incolla token (KITCHENID:CODICE). Altrimenti crea una nuova cucina."}));
+
+    var inInvite = el("input",{placeholder:"Invito (es. KABC1234:9XK2LMNQ)", value: inviteToken,
+      style:"width:100%;padding:12px 12px;border-radius:12px;border:1.5px solid rgba(0,0,0,.12);font-size:13px;outline:none;margin-bottom:10px"});
+    var inKid = el("input",{placeholder:"Kitchen ID (es. KABC1234)", value: kitchenId,
+      style:"width:100%;padding:12px 12px;border-radius:12px;border:1.5px solid rgba(0,0,0,.12);font-size:13px;outline:none;margin-bottom:10px"});
+
+    var row = el("div",{style:"display:flex;gap:10px;flex-wrap:wrap"});
+    var bGen = mkBtn("Genera ID","ghost",function(){ inKid.value = genKitchenId(); });
+    var bUseInvite = mkBtn("Usa invito","green",function(){
+      inviteToken = (inInvite.value||"").trim();
+      var p = parseInviteToken(inviteToken);
+      if(!p){ flash("Formato invito errato.","err"); return; }
+      kitchenId = p.kid;
+      _pendingKitchenId = kitchenId;
+      step = 1;
+      draw();
+    });
+    bUseInvite.style.flex="1";
+    row.appendChild(bGen); row.appendChild(bUseInvite);
+
+    box.appendChild(inInvite);
+    box.appendChild(el("div",{style:"font-size:11px;color:"+TX2+";margin:10px 0 6px", text:"Oppure crea/usa una nuova cucina:"}));
+    box.appendChild(inKid);
+
+    var row2 = el("div",{style:"display:flex;gap:10px;flex-wrap:wrap"});
+    var bCreate = mkBtn("Crea nuova cucina","red",function(){
+      kitchenId = (inKid.value||"").trim().toUpperCase();
+      if(kitchenId.length < 3){ flash("Kitchen ID troppo corto.","err"); return; }
+      _pendingKitchenId = kitchenId;
+      inviteToken = ""; // create flow
+      step = 1;
+      draw();
+    });
+    bCreate.style.flex="1";
+    row2.appendChild(bCreate);
+
+    box.appendChild(row);
+    box.appendChild(row2);
+
+    body.appendChild(box);
+  }
+
+  function stepNome(body){
+    body.appendChild(el("div",{style:"font-size:11px;font-weight:900;color:"+TX2+";letter-spacing:.7px;text-transform:uppercase;margin-bottom:10px", text:"2) Nome"}));
+    var inNome = el("input",{placeholder:"Il tuo nome (es. Andrea)", value:nome,
+      style:"width:100%;padding:12px 12px;border-radius:12px;border:1.5px solid rgba(0,0,0,.12);font-size:14px;outline:none"});
+    body.appendChild(inNome);
+
+    var hint = el("div",{style:"margin-top:10px;font-size:12px;color:"+TX2+";line-height:1.35"});
+    hint.textContent = "Kitchen ID selezionato: " + (currentKitchenId() || "—");
+    body.appendChild(hint);
+
+    var nav = el("div",{style:"display:flex;gap:10px;margin-top:14px"});
+    var back = mkBtn("Indietro","ghost",function(){ step=0; draw(); });
+    var next = mkBtn("Continua","green",function(){
+      nome = (inNome.value||"").trim();
+      if(nome.length<2){ flash("Inserisci un nome.","err"); return; }
+      step=2; draw();
+    });
+    back.style.flex="1"; next.style.flex="1";
+    nav.appendChild(back); nav.appendChild(next);
+    body.appendChild(nav);
+  }
+
+  function stepPartita(body){
+    body.appendChild(el("div",{style:"font-size:11px;font-weight:900;color:"+TX2+";letter-spacing:.7px;text-transform:uppercase;margin-bottom:10px", text:"3) Partita"}));
+
+    var sel = el("select",{style:"width:100%;padding:12px;border-radius:12px;border:1.5px solid rgba(0,0,0,.12);font-size:14px;outline:none"});
+    PK.forEach(function(k){
+      var o = el("option",{value:k,text:PARTITE[k].ico+" "+PARTITE[k].label});
+      if(k===partita) o.selected=true;
+      sel.appendChild(o);
+    });
+    body.appendChild(sel);
+
+    var nav = el("div",{style:"display:flex;gap:10px;margin-top:14px"});
+    var back = mkBtn("Indietro","ghost",function(){ step=1; draw(); });
+    var done = mkBtn("Completa","green",function(){
+      partita = sel.value;
+
+      var kid = currentKitchenId();
+      if(!kid){ flash("Kitchen ID mancante.","err"); return; }
+
+      // salva profilo
+      var prof = { nome:nome, partita:partita, kitchenId:kid };
+      stor.set(ACCT.profile, prof);
+      S.profile = prof;
+
+      // finalizza membership:
+      if(inviteToken){
+        acceptInviteAndJoin(inviteToken, nome, function(joinKid, role){
+          flash("Entrato in cucina "+joinKid+" ("+role+") ✓");
+        });
+      }else{
+        // owner admin
+        createKitchenAndOwner(kid, nome);
+
+        // crea 2 inviti di default (chef + staff) e copia in clipboard (se possibile)
+        createInvite(kid, "chef", function(codeChef){
+          createInvite(kid, "staff", function(codeStaff){
+            var linkChef = location.origin + location.pathname + "?join=" + encodeURIComponent(kid+":"+codeChef);
+            var linkStaff = location.origin + location.pathname + "?join=" + encodeURIComponent(kid+":"+codeStaff);
+            try{
+              navigator.clipboard.writeText("INVITO CHEF:\n"+linkChef+"\n\nINVITO STAFF:\n"+linkStaff);
+              flash("Inviti copiati negli appunti ✓","info");
+            }catch(e){
+              flash("Cucina creata ✓ (inviti generati)","info");
+              console.log("INVITO CHEF:", linkChef);
+              console.log("INVITO STAFF:", linkStaff);
+            }
+          });
+        });
+      }
+
+      // boot app
+      boot();
+    });
+
+    back.style.flex="1"; done.style.flex="1";
+    nav.appendChild(back); nav.appendChild(done);
+    body.appendChild(nav);
+  }
+
+  function draw(){
+    card.innerHTML = "";
+    card.appendChild(title);
+    card.appendChild(sub);
+
+    // join via URL: ?join=KID:CODE
+    try{
+      var qs = new URLSearchParams(location.search);
+      var j = qs.get("join");
+      if(j && !inviteToken && step===0){
+        inviteToken = decodeURIComponent(j);
+      }
+    }catch(e){}
+
+    if(step===0) stepKitchen(card);
+    else if(step===1) stepNome(card);
+    else stepPartita(card);
+  }
+
   draw();
+  app.appendChild(card);
 }
 
 // ══════════════════════════════════════════════════════════════════════
